@@ -1,0 +1,22 @@
+variable,type,unit_or_values,definition
+participant_id,string,P001-P099,Pseudonym; no participant linking key is included.
+trial_number,integer,trial,Original trial index within participant; retained for traceability.
+prime,category,neutral / approach / avoid,Motivational context; avoid means avoidance.
+stimulus_id,string,F codes,Pseudonym for a facial image; not a participant identifier.
+affect,category,six expression categories,Category of the selected face image; not a continuous predictor.
+donation,binary,0 / 1,0 = did not donate; 1 = donated.
+valence,numeric,-1 to 1,Raw FaceReader facial valence; 0 = neutral; never centered or standardized.
+arousal,numeric,0 to 1,Raw FaceReader facial arousal; mean-centered in the notebook.
+totalFixDur_Eyes,numeric,milliseconds,Total fixation duration in the indicated AOI. Eyes combines both eyes; eyebrow denotes glabella. Converted to seconds before calculating regional proportions.
+totalFixDur_eyebrow,numeric,milliseconds,Total fixation duration in the indicated AOI. Eyes combines both eyes; eyebrow denotes glabella. Converted to seconds before calculating regional proportions.
+totalFixDur_nose,numeric,milliseconds,Total fixation duration in the indicated AOI. Eyes combines both eyes; eyebrow denotes glabella. Converted to seconds before calculating regional proportions.
+totalFixDur_mouth,numeric,milliseconds,Total fixation duration in the indicated AOI. Eyes combines both eyes; eyebrow denotes glabella. Converted to seconds before calculating regional proportions.
+fixLatency_Eyes,numeric,milliseconds,Latency of the first fixation in the indicated AOI. Earliest finite latency defines first-look AOI; missing or tied first locations are excluded from first-look tests.
+fixLatency_eyebrow,numeric,milliseconds,Latency of the first fixation in the indicated AOI. Earliest finite latency defines first-look AOI; missing or tied first locations are excluded from first-look tests.
+fixLatency_nose,numeric,milliseconds,Latency of the first fixation in the indicated AOI. Earliest finite latency defines first-look AOI; missing or tied first locations are excluded from first-look tests.
+fixLatency_mouth,numeric,milliseconds,Latency of the first fixation in the indicated AOI. Earliest finite latency defines first-look AOI; missing or tied first locations are excluded from first-look tests.
+pupil_dilation,numeric,cube root of positive pupil-change AUC,"Existing trial-level derived index from the merged analysis dataset, not raw pupil diameter."
+DOSPERT,numeric,questionnaire score,Risk preference score as supplied in the merged analysis dataset.
+Cooperative,numeric,questionnaire score,Cooperative orientation score as supplied in the merged dataset.
+attractiveness,numeric,independent mean rating,Facial attractiveness covariate from an independent rating sample.
+mtrust,numeric,independent mean rating,Perceived facial trustworthiness covariate from an independent rating sample.
