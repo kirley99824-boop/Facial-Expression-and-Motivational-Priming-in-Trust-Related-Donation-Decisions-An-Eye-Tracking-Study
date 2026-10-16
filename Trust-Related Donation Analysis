@@ -1,0 +1,300 @@
+---
+title: "Trust-Related Donation Analysis"
+author: "KL"
+output: html_document
+---
+
+
+# Data preparation
+
+```{r data-preparation, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+
+as_numeric <- function(x) as.numeric(as.character(x))
+mean_or_na <- function(x) {
+  x <- as_numeric(x)
+  if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+}
+z_score <- function(x) as.numeric(scale(as_numeric(x)))
+first_look <- function(latencies) {
+  if (all(is.na(latencies))) return(NA_character_)
+  first_region <- which(latencies == min(latencies, na.rm = TRUE))
+  if (length(first_region) != 1) return("tie")
+  c("Eye", "Glabella", "Nose", "Mouth")[first_region]
+}
+
+prime_levels <- c("neutral", "approach", "avoid")
+region_levels <- c("Eye", "Glabella", "Nose", "Mouth")
+glmer_control <- glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000))
+lmer_control <- lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000))
+
+df_raw <- read.csv("data/trials_clean.csv", check.names = FALSE) %>%
+  transmute(
+    Subject = factor(participant_id), Trial = trial_number,
+    prime = factor(prime, levels = prime_levels), affect, face = stimulus_id,
+    Donate = as_numeric(donation), valence, arousal,
+    totalFixDur_Eyes, totalFixDur_eyebrow, totalFixDur_nose, totalFixDur_mouth,
+    fixLatency_Eyes, fixLatency_eyebrow, fixLatency_nose, fixLatency_mouth,
+    pupil_dilation, DOSPERT, Cooperative, attractiveness, mtrust
+  )
+
+df <- df_raw %>%
+  group_by(Subject, prime, affect, face) %>%
+  summarise(
+    Donate = first(Donate), valence = first(valence), arousal = first(arousal),
+    totalFixDur_Eye = mean_or_na(totalFixDur_Eyes) / 1000,
+    totalFixDur_Glabella = mean_or_na(totalFixDur_eyebrow) / 1000,
+    totalFixDur_Nose = mean_or_na(totalFixDur_nose) / 1000,
+    totalFixDur_Mouth = mean_or_na(totalFixDur_mouth) / 1000,
+    fixLatency_Eye = mean_or_na(fixLatency_Eyes) / 1000,
+    fixLatency_Glabella = mean_or_na(fixLatency_eyebrow) / 1000,
+    fixLatency_Nose = mean_or_na(fixLatency_nose) / 1000,
+    fixLatency_Mouth = mean_or_na(fixLatency_mouth) / 1000,
+    pupil = mean_or_na(pupil_dilation), DOSPERT = first(DOSPERT),
+    Cooperative = first(Cooperative), attractiveness = first(attractiveness),
+    mtrust = first(mtrust), .groups = "drop"
+  ) %>%
+  mutate(
+    arousal_mc = arousal - mean(arousal, na.rm = TRUE),
+    z_DOSPERT = z_score(DOSPERT), z_Cooperative = z_score(Cooperative),
+    z_attractiveness = z_score(attractiveness), z_mtrust = z_score(mtrust),
+    total_aoi_fixdur = totalFixDur_Eye + totalFixDur_Glabella +
+      totalFixDur_Nose + totalFixDur_Mouth,
+    prop_Eye = if_else(total_aoi_fixdur > 0, totalFixDur_Eye / total_aoi_fixdur, NA_real_),
+    prop_Glabella = if_else(total_aoi_fixdur > 0, totalFixDur_Glabella / total_aoi_fixdur, NA_real_),
+    prop_Nose = if_else(total_aoi_fixdur > 0, totalFixDur_Nose / total_aoi_fixdur, NA_real_),
+    prop_Mouth = if_else(total_aoi_fixdur > 0, totalFixDur_Mouth / total_aoi_fixdur, NA_real_)
+  )
+
+latencies <- as.matrix(df[, c(
+  "fixLatency_Eye", "fixLatency_Glabella", "fixLatency_Nose", "fixLatency_Mouth"
+)])
+storage.mode(latencies) <- "numeric"
+latencies[!is.finite(latencies)] <- NA_real_
+
+df <- df %>%
+  mutate(
+    firstLook_AOI = factor(apply(latencies, 1, first_look), levels = c(region_levels, "tie")),
+    firstLook_Eye = as.integer(firstLook_AOI == "Eye"),
+    firstLook_Glabella = as.integer(firstLook_AOI == "Glabella"),
+    firstLook_Nose = as.integer(firstLook_AOI == "Nose"),
+    firstLook_Mouth = as.integer(firstLook_AOI == "Mouth")
+  )
+
+analysis_complete <- function(data, outcome) {
+  data %>%
+    filter(
+      !is.na(.data[[outcome]]), !is.na(valence), !is.na(arousal_mc), !is.na(prime),
+      !is.na(z_DOSPERT), !is.na(z_Cooperative), !is.na(z_attractiveness), !is.na(z_mtrust)
+    )
+}
+
+donation_dat <- analysis_complete(df, "Donate")
+firstlook_dat <- analysis_complete(df %>% filter(firstLook_AOI %in% region_levels), "Donate")
+pupil_dat <- analysis_complete(df, "pupil")
+
+reference_at <- list(valence = 0, arousal_mc = 0)
+
+context_comparisons <- function(model) {
+  condition <- as.data.frame(
+    pairs(emmeans(model, ~ prime, at = reference_at), adjust = "none")
+  ) %>% mutate(comparison_type = "Condition difference")
+
+  valence <- as.data.frame(
+    pairs(emtrends(model, ~ prime, var = "valence", at = reference_at), adjust = "none")
+  ) %>% mutate(comparison_type = "Valence association difference")
+
+  arousal <- as.data.frame(
+    pairs(emtrends(model, ~ prime, var = "arousal_mc", at = reference_at), adjust = "none")
+  ) %>% mutate(comparison_type = "Arousal association difference")
+
+  results <- bind_rows(condition, valence, arousal)
+  approach_avoid <- results$contrast == "approach - avoid"
+  results$p_holm_approach_avoid <- NA_real_
+  results$p_holm_approach_avoid[approach_avoid] <- p.adjust(
+    results$p.value[approach_avoid], method = "holm"
+  )
+  results
+}
+
+fit_lmer_models <- function(outcome, data) {
+  primary <- lmer(
+    as.formula(paste0(
+      outcome,
+      " ~ valence * prime + arousal_mc * prime + z_DOSPERT + z_Cooperative + ",
+      "z_attractiveness + z_mtrust + (1 | Subject)"
+    )),
+    data = analysis_complete(data, outcome), REML = TRUE, control = lmer_control
+  )
+  valence_arousal <- update(primary, . ~ . + valence:arousal_mc)
+  three_way <- update(valence_arousal, . ~ . + valence:arousal_mc:prime)
+
+  list(
+    primary = primary,
+    valence_arousal = valence_arousal,
+    three_way = three_way,
+    valence_arousal_lrt = anova(update(primary, REML = FALSE), update(valence_arousal, REML = FALSE)),
+    three_way_lrt = anova(update(valence_arousal, REML = FALSE), update(three_way, REML = FALSE)),
+    context_comparisons = context_comparisons(primary)
+  )
+}
+
+fit_glmer_models <- function(outcome, data, random_effect = "(1 | Subject)") {
+  primary <- glmer(
+    as.formula(paste0(
+      outcome,
+      " ~ valence * prime + arousal_mc * prime + z_DOSPERT + z_Cooperative + ",
+      "z_attractiveness + z_mtrust + ", random_effect
+    )),
+    data = analysis_complete(data, outcome), family = binomial, control = glmer_control
+  )
+  valence_arousal <- update(primary, . ~ . + valence:arousal_mc)
+  three_way <- update(valence_arousal, . ~ . + valence:arousal_mc:prime)
+
+  list(
+    primary = primary,
+    valence_arousal = valence_arousal,
+    three_way = three_way,
+    valence_arousal_lrt = anova(primary, valence_arousal, test = "Chisq"),
+    three_way_lrt = anova(valence_arousal, three_way, test = "Chisq"),
+    context_comparisons = context_comparisons(primary)
+  )
+}
+```
+
+# RQ1 and H1: Donation decisions
+
+```{r rq1-donation}
+m_donation <- fit_glmer_models("Donate", donation_dat, random_effect = "(prime | Subject)")
+
+summary(m_donation$primary)
+summary(m_donation$valence_arousal)
+m_donation$valence_arousal_lrt
+m_donation$three_way_lrt
+m_donation$context_comparisons
+```
+
+# RQ2 and H2: Facial valence, facial arousal, motivational context, and visual attention
+
+```{r rq2-visual-attention}
+# Fixation-proportion models
+m_prop_eye <- fit_lmer_models("prop_Eye", df)
+m_prop_glabella <- fit_lmer_models("prop_Glabella", df)
+m_prop_nose <- fit_lmer_models("prop_Nose", df)
+m_prop_mouth <- fit_lmer_models("prop_Mouth", df)
+
+summary(m_prop_eye$primary); summary(m_prop_eye$valence_arousal)
+m_prop_eye$valence_arousal_lrt; m_prop_eye$three_way_lrt; m_prop_eye$context_comparisons
+summary(m_prop_glabella$primary); summary(m_prop_glabella$valence_arousal)
+m_prop_glabella$valence_arousal_lrt; m_prop_glabella$three_way_lrt; m_prop_glabella$context_comparisons
+summary(m_prop_nose$primary); summary(m_prop_nose$valence_arousal)
+m_prop_nose$valence_arousal_lrt; m_prop_nose$three_way_lrt; m_prop_nose$context_comparisons
+summary(m_prop_mouth$primary); summary(m_prop_mouth$valence_arousal)
+m_prop_mouth$valence_arousal_lrt; m_prop_mouth$three_way_lrt; m_prop_mouth$context_comparisons
+
+# First-look models
+m_first_eye <- fit_glmer_models("firstLook_Eye", firstlook_dat)
+m_first_glabella <- fit_glmer_models("firstLook_Glabella", firstlook_dat)
+m_first_nose <- fit_glmer_models("firstLook_Nose", firstlook_dat)
+m_first_mouth <- fit_glmer_models("firstLook_Mouth", firstlook_dat)
+
+summary(m_first_eye$primary); summary(m_first_eye$valence_arousal)
+summary(m_first_eye$three_way)
+m_first_eye$valence_arousal_lrt; m_first_eye$three_way_lrt; m_first_eye$context_comparisons
+summary(m_first_glabella$primary); summary(m_first_glabella$valence_arousal)
+m_first_glabella$valence_arousal_lrt; m_first_glabella$three_way_lrt; m_first_glabella$context_comparisons
+summary(m_first_nose$primary); summary(m_first_nose$valence_arousal)
+summary(m_first_nose$three_way)
+m_first_nose$valence_arousal_lrt; m_first_nose$three_way_lrt; m_first_nose$context_comparisons
+summary(m_first_mouth$primary); summary(m_first_mouth$valence_arousal)
+m_first_mouth$valence_arousal_lrt; m_first_mouth$three_way_lrt; m_first_mouth$context_comparisons
+```
+
+# RQ3 and H3: Pupil dilation
+
+```{r rq3-pupil}
+m_pupil <- fit_lmer_models("pupil", pupil_dat)
+
+summary(m_pupil$primary)
+summary(m_pupil$valence_arousal)
+m_pupil$valence_arousal_lrt
+m_pupil$three_way_lrt
+m_pupil$context_comparisons
+```
+
+# RQ4: Regional gaze allocation and donation decisions
+
+```{r rq4-regional-gaze-donation}
+# Regional fixation proportion
+df_region <- df %>%
+  mutate(trial_id = row_number()) %>%
+  select(trial_id, Subject, Donate, z_DOSPERT, z_Cooperative, z_attractiveness,
+    z_mtrust, prop_Eye, prop_Glabella, prop_Nose, prop_Mouth) %>%
+  pivot_longer(starts_with("prop_"), names_to = "region", names_prefix = "prop_",
+    values_to = "proportion") %>%
+  filter(!is.na(Donate), !is.na(proportion), !is.na(z_DOSPERT), !is.na(z_Cooperative),
+    !is.na(z_attractiveness), !is.na(z_mtrust)) %>%
+  mutate(region = factor(region, levels = c("Eye", "Glabella", "Mouth", "Nose")),
+    z_proportion = z_score(proportion))
+
+contrasts(df_region$region) <- contr.sum(4)
+colnames(contrasts(df_region$region)) <- c("Eye_vs_mean", "Glabella_vs_mean", "Mouth_vs_mean")
+
+m_region_intercept <- glmer(
+  Donate ~ region + z_DOSPERT + z_Cooperative + z_attractiveness + z_mtrust + (1 | Subject),
+  data = df_region, family = binomial, control = glmer_control
+)
+
+m_region_common_slope <- update(m_region_intercept, . ~ . + z_proportion)
+m_region_donation <- update(m_region_common_slope, . ~ . + region:z_proportion)
+
+summary(m_region_donation)
+m_region_common_slope_lrt <- anova(m_region_intercept, m_region_common_slope, test = "Chisq")
+m_region_slope_lrt <- anova(m_region_common_slope, m_region_donation, test = "Chisq")
+m_region_common_slope_lrt
+m_region_slope_lrt
+
+# First-look location
+firstlook_donation <- df %>%
+  filter(firstLook_AOI %in% region_levels, !is.na(Donate)) %>%
+  mutate(firstLook_AOI = droplevels(firstLook_AOI))
+
+firstlook_chisq <- chisq.test(
+  table(firstLook_AOI = firstlook_donation$firstLook_AOI, Donate = firstlook_donation$Donate),
+  correct = FALSE
+)
+firstlook_chisq
+
+firstlook_pairwise <- combn(region_levels, 2, simplify = FALSE) %>%
+  lapply(function(regions) {
+    subset_data <- firstlook_donation %>% filter(firstLook_AOI %in% regions)
+    test <- chisq.test(
+      table(firstLook_AOI = factor(subset_data$firstLook_AOI, levels = regions), Donate = subset_data$Donate),
+      correct = FALSE
+    )
+    tibble(
+      comparison = paste(regions, collapse = " vs. "),
+      chisq = unname(test$statistic),
+      df = unname(test$parameter),
+      p = test$p.value
+    )
+  }) %>%
+  bind_rows() %>%
+  mutate(p_holm = p.adjust(p, method = "holm"))
+firstlook_pairwise
+```
+
+# RQ5: Pupil dilation and donation
+
+```{r rq5-pupil-donation}
+m_pupil_donation <- glmer(
+  Donate ~ pupil + z_DOSPERT + z_Cooperative + z_attractiveness + z_mtrust + (1 | Subject),
+  data = pupil_dat,
+  family = binomial, control = glmer_control
+)
+summary(m_pupil_donation)
+```
